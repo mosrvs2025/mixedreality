@@ -13,9 +13,13 @@ export const MAX_LIGHTS = 12;
 const vertexShader = /* glsl */ `
   varying vec3 vWorld;
   varying vec3 vN;
+  uniform float uLift;
   void main() {
     vec4 w = modelMatrix * vec4(position, 1.0);
     vWorld = w.xyz;
+    // With sensed depth on, real surfaces already fill the depth buffer; lift
+    // this light layer toward the eye so it isn't swallowed by sensor noise.
+    w.xyz += normalize(cameraPosition - w.xyz) * uLift;
     vN = normalize(mat3(modelMatrix) * normal);
     gl_Position = projectionMatrix * viewMatrix * w;
   }
@@ -30,6 +34,7 @@ const fragmentShader = /* glsl */ `
   uniform float uStars;
   uniform float uSpeed;
   uniform float uLife;
+  uniform vec4 uSun;
   varying vec3 vWorld;
   varying vec3 vN;
 
@@ -56,6 +61,12 @@ const fragmentShader = /* glsl */ `
         float wake = smoothstep(r, r - 1.2, d) * step(d, r) * 0.18 * fade * fade;
         col += vec3(0.35, 0.85, 1.0) * (ring * (0.35 + 1.4 * line) + wake * line);
       }
+    }
+
+    // Dawn light spilling in from the real window.
+    if (uSun.w > 0.001) {
+      vec3 sv = vWorld - uSun.xyz;
+      col += vec3(1.0, 0.62, 0.3) * uSun.w * (exp(-dot(sv, sv) * 0.7) * 0.3 + exp(-dot(sv, sv) * 6.0) * 0.4);
     }
 
     // Warm light pools cast by fireflies and the player's lantern hands.
@@ -108,6 +119,8 @@ export class Room {
       uStars: { value: 0 },
       uSpeed: { value: PULSE_SPEED },
       uLife: { value: PULSE_LIFE },
+      uLift: { value: 0 },
+      uSun: { value: new THREE.Vector4(0, 0, 0, 0) },
     };
     this.material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -428,6 +441,30 @@ export class Room {
         C[i].copy(l.color);
       } else L[i].w = 0;
     }
+  }
+
+  // Centres of surfaces the runtime labelled (e.g. 'window', 'door', 'lamp').
+  findLabeled(label) {
+    const out = [];
+    for (const e of this.entries.values()) {
+      if (!e.label || !e.label.toLowerCase().includes(label)) continue;
+      const g = e.obj.geometry;
+      g.computeBoundingBox();
+      out.push(g.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(e.obj.matrix));
+    }
+    return out;
+  }
+
+  stats() {
+    let meshes = 0;
+    let planes = 0;
+    const labels = new Set();
+    for (const e of this.entries.values()) {
+      if (e.kind === 'mesh') meshes++;
+      if (e.kind === 'plane') planes++;
+      if (e.label) labels.add(e.label);
+    }
+    return { meshes, planes, labels: [...labels], area: this.realArea, hits: this.hitPoints.length };
   }
 
   update(time, stars) {

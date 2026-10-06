@@ -4,6 +4,7 @@
 // watch them settle on your walls, where they'll still be tomorrow night.
 import * as THREE from 'three';
 import { Firefly, KINDS } from './firefly.js';
+import { Moth } from './moth.js';
 import { PULSE_SPEED, MAX_LIGHTS } from './room.js';
 import { loadBest, saveBest } from './memory.js';
 
@@ -12,7 +13,8 @@ const NIGHT = 0.64;
 const GOLDEN_AT = [30, 80, 125];
 const LANTERN = new THREE.Color('#ffd27a');
 const SEED = new THREE.Color('#7fe8ff');
-const UP = new THREE.Vector3(0, 1, 0);
+const DAWN_MOTE = new THREE.Color('#ffd0a0');
+const MOTH = new THREE.Color('#8a4dff');
 
 const _v = new THREE.Vector3();
 const _w = new THREE.Vector3();
@@ -26,6 +28,7 @@ export class Game {
   constructor({ scene, room, audio, particles, sky, label, scoreLabel, memories, glowTex, sim }) {
     Object.assign(this, { scene, room, audio, particles, sky, label, scoreLabel, memories, glowTex, sim });
     this.flies = [];
+    this.moths = [];
     this.memoryNights = [];
     this.lanterns = [];
     this.haloCenter = new THREE.Vector3(0, 1, 0);
@@ -56,6 +59,11 @@ export class Game {
     this.seeds = [];
     this.persisted = null;
     this.hinted = {};
+    this.window = null;
+    for (const m of this.moths) m.dispose();
+    this.moths = [];
+    this.mothTimer = 0;
+    this.snuffed = 0;
     this.night = Math.min(this.night, 0.2);
     this.dawn = 0;
     // Last round's resting fireflies stay as quiet memories.
@@ -111,6 +119,13 @@ export class Game {
     for (const f of this.flies) {
       const d = f.pos.distanceTo(pos);
       if (d < 9) f.pingAt = now + d / PULSE_SPEED;
+    }
+    for (const m of this.moths) {
+      const d = m.pos.distanceTo(pos);
+      if (d < 9) {
+        m.pingAt = now + d / PULSE_SPEED;
+        m.pingFrom = pos.clone();
+      }
     }
   }
 
@@ -236,6 +251,15 @@ export class Game {
     this.sky.set(this.night, this.dawn, now, this.room.realArea > 0.5 ? 0 : stars * 0.8);
     this.sky.follow(head);
     this.room.update(now, stars);
+    const sun = this.room.uniforms.uSun.value;
+    if (this.window && (this.phase === 'dawn' || this.phase === 'over')) {
+      sun.set(this.window.x, this.window.y, this.window.z, Math.min(1, pt / 5));
+      // dust motes drifting in the morning light
+      if (Math.random() < dt * 12) {
+        _v.copy(this.window).add(_w.randomDirection().multiplyScalar(0.5));
+        this.particles.emit(_v, _w.subVectors(head, this.window).normalize().multiplyScalar(0.12), DAWN_MOTE, { life: 3, size: 0.01, drag: 0.2, gravity: -0.01 });
+      }
+    } else sun.w = 0;
     this.audio.night = this.night / NIGHT * (1 - this.dawn);
 
     // catching & startling
@@ -265,17 +289,27 @@ export class Game {
     const haloTarget = _v.set(head.x, head.y - 0.55, head.z);
     this.haloCenter.lerp(haloTarget, Math.min(1, dt * 3));
     let ci = 0;
+    const cradle = this.updateCradle(dt, now, hands);
     for (const f of this.flies) {
       if (f.state === 'caught') {
-        const a = ci * 2.39996 + now * 0.35;
-        const r = 0.55 + 0.06 * Math.sin(now * 0.7 + ci);
-        const target = _v.set(
-          this.haloCenter.x + Math.cos(a) * r,
-          this.haloCenter.y + 0.12 * Math.sin(now * 0.9 + ci * 1.7),
-          this.haloCenter.z + Math.sin(a) * r,
-        );
-        f.pos.lerp(target, Math.min(1, dt * 2.2));
-        f.scale += (0.7 - f.scale) * Math.min(1, dt * 2);
+        let target;
+        if (cradle) {
+          // Swirl in a tight little column above the open palm.
+          const a = ci * 2.39996 + now * 1.6;
+          const k = (ci % 12) / 12;
+          const r = 0.03 + 0.05 * k;
+          target = _v.set(cradle.x + Math.cos(a) * r, cradle.y + 0.05 + 0.12 * k + 0.015 * Math.sin(now * 3 + ci), cradle.z + Math.sin(a) * r);
+        } else {
+          const a = ci * 2.39996 + now * 0.35;
+          const r = 0.55 + 0.06 * Math.sin(now * 0.7 + ci);
+          target = _v.set(
+            this.haloCenter.x + Math.cos(a) * r,
+            this.haloCenter.y + 0.12 * Math.sin(now * 0.9 + ci * 1.7),
+            this.haloCenter.z + Math.sin(a) * r,
+          );
+        }
+        f.pos.lerp(target, Math.min(1, dt * (cradle ? 4 : 2.2)));
+        f.scale += ((cradle ? 0.45 : 0.7) - f.scale) * Math.min(1, dt * 2);
         ci++;
       }
       f.update(dt, now);
@@ -307,6 +341,7 @@ export class Game {
       }
     }
 
+    this.updateMoths(dt, now, hands);
     this.updateMemories(dt, now, ctx);
     this.updateSeeds(now);
     this.updateLanterns(hands, now);
@@ -315,6 +350,24 @@ export class Game {
     this.audio.musicLevel = this.phase === 'play' ? Math.min(1, this.caught.length / 30) : this.phase === 'intro' ? 0 : this.audio.musicLevel * Math.exp(-dt * 0.2);
     this.audio.tempo = this.phase === 'play' && pt > PLAY_LEN - 30 ? 0.24 : 0.34;
     this.audio.update(dt, this.phase === 'idle' ? 0 : 0.4 + 0.6 * Math.min(1, this.caught.length / 20));
+  }
+
+  // Hold a palm up (or squeeze a grip) and your fireflies pour into your hand.
+  updateCradle(dt, now, hands) {
+    const h = this.phase === 'play' || this.phase === 'intro' ? hands.find((x) => x.cradle) : null;
+    this.cradleHold = h ? (this.cradleHold || 0) + dt : 0;
+    if (!h || this.cradleHold < 0.35 || !this.caught.length) {
+      if (this.cradling) this.cradling = false;
+      return null;
+    }
+    if (!this.cradling) {
+      this.cradling = true;
+      this.audio.chord([4, 7, 9], 0.025, 2.5);
+      this.hinted.cradle = true;
+    }
+    this.cradlePos ??= new THREE.Vector3();
+    this.cradlePos.copy(h.pos);
+    return this.cradlePos;
   }
 
   updateIntro(pt, now, head, fwdF, hands) {
@@ -407,6 +460,26 @@ export class Game {
       this.say('Listen…', this.chimeHint);
       this.at(pt + 4, () => this.label.hide());
     }
+    // The last stretch of night: gloom moths come for the light.
+    this.mothTimer -= dt;
+    const alive = this.moths.filter((m) => m.state !== 'fleeing').length;
+    if (left < 75 && left > 6 && this.mothTimer <= 0 && alive < (left < 30 ? 3 : 2)) {
+      this.mothTimer = left < 30 ? 6 : 10;
+      const s = this.findPerch(head, { minD: 1.6, maxD: 4.5 });
+      const m = new Moth(this.scene, this.glowTex, s.pos.clone().addScaledVector(s.normal, 0.12));
+      this.moths.push(m);
+      this.audio.moth(m.pos.clone());
+      if (!this.hinted.moth) {
+        this.hinted.moth = true;
+        this.say('Something is hungry for light…', this.sim ? 'chime (Space) or swat to scare it' : 'chime or swat to scare it away');
+        this.at(pt + 4.5, () => this.label.hide());
+      }
+    }
+    if (pt > 40 && this.caught.length >= 5 && !this.hinted.cradle && left > 40) {
+      this.hinted.cradle = true;
+      this.say('Hold out an open palm', this.sim ? '(hold Shift)' : 'or squeeze a grip', 'your fireflies will come to you');
+      this.at(pt + 4.5, () => this.label.hide());
+    }
     if (left < 30 && !this.hinted.dawn) {
       this.hinted.dawn = true;
       this.say('Dawn is coming', 'last chance!');
@@ -425,8 +498,16 @@ export class Game {
       saveBest(this.best);
     } else this.newBest = false;
     this.audio.chord([0, 4, 7, 9, 11], 0.06, 8);
-    this.say('Dawn', '');
-    for (const f of this.flies) if (f.inField) f.fade();
+    // If the room knows where its window is, dawn comes in through it, and
+    // the fireflies you didn't catch fly out through it.
+    for (const m of this.moths) m.scatter(head);
+    this.window = this.room.findLabeled('window').sort((a, b) => a.distanceTo(head) - b.distanceTo(head))[0] || null;
+    this.say('Dawn', this.window ? 'look — the light is coming in' : '');
+    for (const f of this.flies) {
+      if (!f.inField) continue;
+      if (this.window) f.flyTo(this.window, _w.subVectors(head, this.window).normalize(), 'fading', 1.2);
+      else f.fade();
+    }
     // Your fireflies leave the halo and settle on your walls.
     const kept = this.caught.slice();
     kept.forEach((f, i) => {
@@ -475,6 +556,58 @@ export class Game {
       const a = Math.random() * Math.PI * 2;
       this.audio.bird({ x: head.x + Math.cos(a) * 3, y: 2, z: head.z + Math.sin(a) * 3 });
     }
+  }
+
+  updateMoths(dt, now, hands) {
+    for (const m of this.moths) {
+      if (m.state === 'hunting' || m.state === 'arriving') {
+        if (m.pingAt <= now) {
+          m.pingAt = Infinity;
+          this.shoo(m, m.pingFrom);
+        }
+        for (const h of hands) if (h.pos.distanceTo(m.pos) < 0.16) this.shoo(m, h.pos, h);
+      }
+      if (m.state === 'hunting') {
+        if (!m.target || !m.target.inField || m.target.state === 'caught') {
+          let best = null;
+          let bd = Infinity;
+          for (const f of this.flies) {
+            if (!f.inField || f.state !== 'perched') continue;
+            const d = f.pos.distanceToSquared(m.pos);
+            if (d < bd) {
+              bd = d;
+              best = f;
+            }
+          }
+          m.target = best;
+        }
+        if (m.target && m.target.state === 'perched' && m.target.pos.distanceTo(m.pos) < 0.07) {
+          // The light goes out.
+          this.audio.snuff(m.target.pos.clone());
+          this.particles.burst(m.target.pos, MOTH, 14, 0.25);
+          m.target.fade();
+          m.target = null;
+          this.snuffed++;
+        }
+      }
+      m.update(dt, now);
+      if (m.state !== 'fleeing' && Math.random() < dt * 14) {
+        this.particles.emit(m.pos, _w.set(0, -0.03, 0), MOTH, { life: 1.2, size: 0.016, drag: 1, gravity: -0.02 });
+      }
+    }
+    for (let i = this.moths.length - 1; i >= 0; i--) {
+      if (this.moths[i].state === 'gone') {
+        this.moths[i].dispose();
+        this.moths.splice(i, 1);
+      }
+    }
+  }
+
+  shoo(m, from, hand) {
+    if (!m.scatter(from)) return;
+    this.audio.startle(m.pos.clone());
+    this.particles.burst(m.pos, MOTH, 24, 0.6);
+    hand?.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.4, 40);
   }
 
   updateMemories(dt, now, ctx) {
@@ -543,7 +676,8 @@ export class Game {
     const L = [];
     const lantern = this.phase === 'idle' ? 0 : 0.25 + 0.35 * Math.min(1, this.caught.length / 25);
     for (const h of hands) if (h.lantern) L.push({ pos: h.pos, intensity: lantern, color: LANTERN });
-    if (this.caught.length && this.phase === 'play') L.push({ pos: this.haloCenter, intensity: Math.min(0.8, 0.1 + this.caught.length * 0.03), color: KINDS.normal.color });
+    if (this.cradling) L.push({ pos: this.cradlePos, intensity: Math.min(1.2, 0.3 + this.caught.length * 0.04), color: KINDS.normal.color });
+    else if (this.caught.length && this.phase === 'play') L.push({ pos: this.haloCenter, intensity: Math.min(0.8, 0.1 + this.caught.length * 0.03), color: KINDS.normal.color });
     const flies = this.flies
       .filter((f) => f.state !== 'caught' && f.brightness > 0.05)
       .map((f) => ({ f, d: f.pos.distanceToSquared(head) }))

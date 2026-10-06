@@ -62,18 +62,44 @@ function trackPoint(key, pos, dt, extra) {
 let hitSources = [];
 let frameNo = 0;
 
+const BASE_FEATURES = ['hand-tracking', 'hit-test', 'plane-detection', 'mesh-detection', 'anchors'];
+
+// Depth sensing lets real hands, people and pets hide fireflies. Some runtimes
+// reject a session whose depth preferences they can't meet, so fall back.
+async function requestARSession() {
+  try {
+    return await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local-floor'],
+      optionalFeatures: [...BASE_FEATURES, 'depth-sensing'],
+      depthSensing: { usagePreference: ['gpu-optimized'], dataFormatPreference: ['float32', 'luminance-alpha', 'unsigned-short'] },
+    });
+  } catch (e) {
+    console.warn('Session with depth sensing failed, retrying without', e);
+    return navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: BASE_FEATURES });
+  }
+}
+
 async function startXR() {
   audio.init();
   audio.resume();
   let session;
   try {
-    session = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['local-floor'],
-      optionalFeatures: ['hand-tracking', 'hit-test', 'plane-detection', 'mesh-detection', 'anchors'],
-    });
+    session = await requestARSession();
   } catch (e) {
     $('status').textContent = `Couldn't start mixed reality: ${e.message}`;
     return;
+  }
+  // three.js reads depth through the WebXR Layers binding; on a runtime that
+  // grants depth-sensing without layers that would throw every frame, so
+  // hide the feature from three there (we just lose real-world occlusion).
+  const feats = session.enabledFeatures;
+  if (feats?.includes('depth-sensing') && session.renderState.layers === undefined) {
+    const kept = feats.filter((f) => f !== 'depth-sensing');
+    try {
+      Object.defineProperty(session, 'enabledFeatures', { get: () => kept, configurable: true });
+    } catch (e) {
+      console.warn('Could not mask depth-sensing', e);
+    }
   }
   mode = 'xr';
   room.resetDynamic();
@@ -152,14 +178,20 @@ function readXR(frame, dt) {
       }
       if (palm) {
         const p = palm.transform.position;
-        hands.push(trackPoint(`${src.handedness}-palm`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.09, kind: 'hand', lantern: false, source: src }));
+        const o = palm.transform.orientation;
+        // Joint -Y points out of the palm: palm facing the sky = cradling.
+        const palmUp = -_n.set(0, 1, 0).applyQuaternion(_q.set(o.x, o.y, o.z, o.w)).y;
+        hands.push(
+          trackPoint(`${src.handedness}-palm`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.09, kind: 'hand', lantern: false, source: src, cradle: palmUp > 0.65 }),
+        );
       }
     } else if (src.gripSpace) {
       const gp = frame.getPose(src.gripSpace, refSpace);
       if (!gp) continue;
       _m.fromArray(gp.transform.matrix);
       const pos = new THREE.Vector3(0, 0.01, -0.06).applyMatrix4(_m);
-      const h = trackPoint(`${src.handedness}-grip`, pos, dt, { radius: 0.11, kind: 'controller', lantern: true, source: src });
+      const squeeze = !!src.gamepad?.buttons?.[1]?.pressed;
+      const h = trackPoint(`${src.handedness}-grip`, pos, dt, { radius: 0.11, kind: 'controller', lantern: true, source: src, cradle: squeeze });
       hands.push(h);
       handBySource.set(src, h);
     }
@@ -257,6 +289,10 @@ function readSim(dt) {
   mouse.clicked = false;
   hands = [trackPoint('mouse', pos, dt, { radius: 0.1, kind: 'mouse', lantern: false })];
   hands[0].vel.set(0, 0, 0);
+  if (keys.has('ShiftLeft') || keys.has('ShiftRight')) {
+    const palm = new THREE.Vector3(0.05, -0.35, -0.45).applyQuaternion(camera.quaternion).add(camera.position);
+    hands.push({ pos: palm, vel: new THREE.Vector3(), radius: 0, kind: 'mouse', lantern: false, cradle: true });
+  }
 }
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
@@ -304,6 +340,8 @@ window.addEventListener('keyup', (e) => keys.delete(e.code));
 function resetScene() {
   if (game) {
     for (const f of game.flies) f.dispose();
+    for (const m of game.moths) m.dispose();
+    game.moths = [];
     for (const m of game.memoryNights) m.flies.forEach((f) => f.dispose());
     game.flies = [];
     game.memoryNights = [];
@@ -311,6 +349,46 @@ function resetScene() {
     game.label.hide();
     game.scoreLabel.hide();
   }
+}
+
+const depthActive = () => renderer.xr.isPresenting && renderer.xr.hasDepthSensing();
+
+// ---------------------------------------------------------------------------
+// ?debug — a floating panel that reports what the headset actually granted.
+
+const DEBUG = new URLSearchParams(location.search).has('debug');
+const debugLabel = DEBUG ? new Label(scene, { width: 0.5, px: 1024, aspect: 0.62, order: 60 }) : null;
+let dbgTimer = 0;
+let dbgFrames = 0;
+
+function updateDebug(dt, frame) {
+  dbgFrames++;
+  dbgTimer += dt;
+  const pos = new THREE.Vector3(-0.32, -0.22, -0.9).applyQuaternion(mode === 'sim' ? camera.quaternion : headQ).add(head);
+  debugLabel.mesh.position.copy(pos);
+  debugLabel.mesh.lookAt(head);
+  debugLabel.update(dt);
+  if (dbgTimer < 0.5) return;
+  const fps = Math.round(dbgFrames / dbgTimer);
+  dbgTimer = 0;
+  dbgFrames = 0;
+  const session = frame?.session;
+  const st = room.stats();
+  const line = (text, color) => ({ text, size: 34, weight: 500, color: color || '#e8f4ff', glow: 'rgba(0,0,0,0)' });
+  const ok = (b) => (b ? '#a6ff8a' : '#ff9a7a');
+  const feats = session?.enabledFeatures;
+  const has = (f) => (feats ? feats.includes(f) : null);
+  const g = game;
+  debugLabel.show([
+    line(`${mode}  ·  ${fps} fps  ·  ${g?.phase ?? '-'}  ·  ✦${g?.score ?? 0}`, fps >= 65 || mode !== 'xr' ? '#a6ff8a' : '#ffd27a'),
+    line(feats ? `features: ${feats.filter((f) => !/viewer|local/.test(f)).join(', ') || 'none'}` : 'features: (not reported)'),
+    line(`depth occlusion: ${depthActive() ? 'on' : 'off'}`, ok(depthActive())),
+    line(`room: ${st.meshes} meshes · ${st.planes} planes · ${st.area.toFixed(0)} m² · ${st.hits} hits`, ok(st.area > 0.5 || st.hits > 12)),
+    line(`labels: ${st.labels.slice(0, 6).join(', ') || '—'}`),
+    line(`inputs: ${hands.map((h) => h.kind).join(', ') || 'none'}`, ok(hands.length)),
+    line(`memories: ${g?.memoryNights.length ?? 0} nights · ${g?.memoryNights.filter((m) => m.located).length ?? 0} located · anchors ${has('anchors') ? 'yes' : 'no'}`),
+    line(`fireflies: ${g?.flies.filter((f) => f.inField).length ?? 0} in room · ${g?.caught?.length ?? 0} kept`),
+  ]);
 }
 
 renderer.setAnimationLoop((time, frame) => {
@@ -333,7 +411,9 @@ renderer.setAnimationLoop((time, frame) => {
   }
   particles.uniforms.uScale.value = renderer.xr.isPresenting ? 1000 : renderer.domElement.height * 0.5;
   particles.update(dt);
+  room.uniforms.uLift.value = depthActive() ? 0.04 : 0;
   if (simVisuals) simVisuals.visible = mode === 'sim';
+  if (DEBUG) updateDebug(dt, frame);
   renderer.render(scene, camera);
 });
 

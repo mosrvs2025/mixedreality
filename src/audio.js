@@ -203,6 +203,20 @@ export class AudioEngine {
     for (let i = 0; i < 5; i++) this._noise(out, { at: i * 0.035, dur: 0.05, gain: 0.07, freq: 1800 + i * 300, q: 3 });
   }
 
+  snuff(pos) {
+    if (!this.ctx) return;
+    const out = this._out(pos, 0.5);
+    this._tone(out, { freq: 900, glide: 220, dur: 0.7, gain: 0.07 });
+    this._noise(out, { dur: 0.5, gain: 0.03, freq: 600, sweep: 150, q: 1, type: 'lowpass' });
+  }
+
+  moth(pos) {
+    if (!this.ctx) return;
+    const out = this._out(pos, 0.3);
+    for (let i = 0; i < 6; i++) this._noise(out, { at: i * 0.06, dur: 0.06, gain: 0.035, freq: 380 + i * 20, q: 4 });
+    this._tone(out, { freq: 110, dur: 1.2, gain: 0.05, attack: 0.3 });
+  }
+
   plink(pos, step) {
     if (!this.ctx) return;
     const out = this._out(pos, 0.6);

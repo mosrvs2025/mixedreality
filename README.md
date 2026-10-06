@@ -12,6 +12,10 @@ The game is built on your room's scanned geometry (WebXR `mesh-detection` / `pla
 - **Your furniture occludes them.** The room mesh is drawn into the depth buffer, so a firefly behind your sofa really is hidden. You have to walk, crouch and lean around your own room.
 - **Echolocation through your room.** Pinch, or pull the trigger, to send a chime. A sonar ripple rolls across your real walls and furniture as glowing contour lines. Each firefly it passes answers with a 3D-positioned chirp, and hidden ones glow through the objects in front of them for a moment.
 - **Light lands on real things.** Fireflies and your glowing fingertips cast soft light pools onto your actual table and walls. Your real ceiling turns into a starry sky.
+- **Your hands and housemates hide them too.** On Quest 3 the game asks for `depth-sensing`, so real-world depth occludes fireflies: a hand, a person or a pet passing in front of one covers it.
+- **Gloom moths.** In the last ~70 seconds, shadowy moths flutter out of your room and creep toward perched fireflies to snuff them out. A chime ripple scatters them as it rolls across the room, and so does a swat.
+- **Dawn comes through your real window.** If Space Setup labelled a window, sunrise glows in through it with drifting motes, and the fireflies you didn't catch fly out through it.
+- **Cradle your catch.** Hold out an open palm (or squeeze a controller's grip) and your caught fireflies pour out of their halo and swirl above your hand, lighting what's beneath it.
 - **Gentleness is a mechanic.** Swipe fast and fireflies startle off to another surface. Reach slowly and they're yours.
 - **Spatial persistence.** At dawn your fireflies fly to your walls and ceiling and are pinned there with a persistent anchor (`anchor.requestPersistentHandle()`). Next time, the opening ripple reveals last night's fireflies glowing in the same spots.
 
@@ -41,9 +45,13 @@ This repo is a static site with no build step (three.js is vendored in `vendor/`
 
 Any other static HTTPS host works too (Netlify, Vercel, Cloudflare Pages, `npx http-server` behind an HTTPS tunnel).
 
+### Debug overlay
+
+Add `?debug` to the URL to get a floating panel in the headset. It shows the frame rate, which WebXR features were granted, whether depth occlusion is on, how many room meshes and planes were found (with their semantic labels), the active inputs, and whether persistent anchors work and restored.
+
 ### Desktop preview
 
-Without a headset, click **Desktop preview** (or open `index.html?preview`). It's a furnished stand-in room so you can try the loop: drag to look, WASD to walk, click a firefly to catch it, Space to chime, Esc to leave.
+Without a headset, click **Desktop preview** (or open `index.html?preview`). It's a furnished stand-in room so you can try the loop: drag to look, WASD to walk, click a firefly to catch it, Space to chime, hold Shift to cradle, Esc to leave.
 
 ## Code map
 
@@ -52,6 +60,7 @@ Without a headset, click **Desktop preview** (or open `index.html?preview`). It'
 | `src/main.js` | WebXR session, hands/controllers, hit-test fan, desktop preview |
 | `src/room.js` | Real-room geometry: depth occluder, light/ripple/star shader, surface sampler, occlusion raycasts |
 | `src/game.js` | Game director: intro choreography, spawning, catching, chime, dawn, results |
+| `src/moth.js` | Gloom moths: late-night shadows that hunt perched fireflies |
 | `src/firefly.js` | Firefly entity: emerge, perch, hover, fly, orbit, rest; X-ray glow through real objects |
 | `src/audio.js` | Synthesized HRTF-spatial audio: chirps, bells, sonar, crickets, adaptive music |
 | `src/memory.js` | Persistent anchors and best score |
