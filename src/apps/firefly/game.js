@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { Firefly, KINDS } from './firefly.js';
 import { Moth } from './moth.js';
 import { PlayArea } from './area.js';
-import { PULSE_SPEED, MAX_LIGHTS } from './room.js';
+import { PULSE_SPEED, MAX_LIGHTS } from '../../core/room.js';
 import { loadBest, saveBest } from './memory.js';
 
 export const PLAY_LEN = 160; // + ~20 s of intro = a 3-minute night

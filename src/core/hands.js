@@ -40,5 +40,7 @@ export function analyzeHand(joint, handedness) {
     for (const t of tips) fistDist += _t.subVectors(t, center).length();
     fistDist /= tips.length;
   }
-  return { center, normal, fistDist };
+  // Which way the forearm extends from the wrist (opposite the fingers).
+  const forearm = _f.clone().negate().normalize();
+  return { center, normal, fistDist, wrist: wrist.clone(), forearm };
 }

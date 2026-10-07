@@ -203,6 +203,30 @@ export class AudioEngine {
     for (let i = 0; i < 5; i++) this._noise(out, { at: i * 0.035, dur: 0.05, gain: 0.07, freq: 1800 + i * 300, q: 3 });
   }
 
+  // Fade the ambient bed out (when leaving an app).
+  silence() {
+    if (!this.ctx) return;
+    this.musicLevel = 0;
+    this.night = 0;
+    this.padGain?.gain.setTargetAtTime(0, this.ctx.currentTime, 0.25);
+  }
+
+  // Little UI sounds: 'press', 'back', 'place', 'open'.
+  ui(kind = 'press') {
+    if (!this.ctx) return;
+    const out = this._out(null, 0.25);
+    if (kind === 'press') this._tone(out, { freq: 1320, glide: 1760, dur: 0.07, gain: 0.07 });
+    else if (kind === 'back') this._tone(out, { freq: 880, glide: 520, dur: 0.12, gain: 0.07 });
+    else if (kind === 'open') {
+      this._tone(out, { freq: note(2, 1), dur: 0.5, gain: 0.08 });
+      this._tone(out, { freq: note(4, 1), dur: 0.5, gain: 0.06, at: 0.07 });
+      this._tone(out, { freq: note(7, 1), dur: 0.7, gain: 0.05, at: 0.14 });
+    } else if (kind === 'place') {
+      this._tone(out, { freq: 330, glide: 220, dur: 0.18, gain: 0.12 });
+      this._tone(out, { freq: note(5, 1), dur: 0.6, gain: 0.07, at: 0.05 });
+    }
+  }
+
   snuff(pos) {
     if (!this.ctx) return;
     const out = this._out(pos, 0.5);

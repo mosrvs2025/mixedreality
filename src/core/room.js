@@ -28,6 +28,7 @@ const vertexShader = /* glsl */ `
 const fragmentShader = /* glsl */ `
   uniform float uTime;
   uniform vec4 uPulse[${MAX_PULSES}];
+  uniform vec3 uPulseCol[${MAX_PULSES}];
   uniform vec4 uLights[${MAX_LIGHTS}];
   uniform vec3 uLightColor[${MAX_LIGHTS}];
   uniform vec4 uStarOrigin;
@@ -59,7 +60,7 @@ const fragmentShader = /* glsl */ `
         float fade = 1.0 - age / uLife;
         float ring = exp(-k * k * 30.0) * fade;
         float wake = smoothstep(r, r - 1.2, d) * step(d, r) * 0.18 * fade * fade;
-        col += vec3(0.35, 0.85, 1.0) * (ring * (0.35 + 1.4 * line) + wake * line);
+        col += uPulseCol[i] * (ring * (0.35 + 1.4 * line) + wake * line);
       }
     }
 
@@ -113,6 +114,7 @@ export class Room {
     this.uniforms = {
       uTime: { value: 0 },
       uPulse: { value: Array.from({ length: MAX_PULSES }, () => new THREE.Vector4(0, 0, 0, -999)) },
+      uPulseCol: { value: Array.from({ length: MAX_PULSES }, () => new THREE.Color(0.35, 0.85, 1.0)) },
       uLights: { value: Array.from({ length: MAX_LIGHTS }, () => new THREE.Vector4(0, 0, 0, 0)) },
       uLightColor: { value: Array.from({ length: MAX_LIGHTS }, () => new THREE.Color(1, 0.9, 0.5)) },
       uStarOrigin: { value: new THREE.Vector4(0, 0, 0, 1e9) },
@@ -336,6 +338,14 @@ export class Room {
     this._refreshFlags();
   }
 
+  // Forget every surface (e.g. when leaving the desktop preview's stand-in room).
+  clearAll() {
+    for (const key of [...this.entries.keys()]) this._remove(key);
+    this.hitPoints = [];
+    this.hitKeys.clear();
+    this._refreshFlags();
+  }
+
   // A new XR session has a new origin: forget everything tied to the old one.
   resetDynamic() {
     for (const [key, e] of [...this.entries]) if (typeof key !== 'string' || e.kind === 'synthetic') this._remove(key);
@@ -422,9 +432,40 @@ export class Room {
 
   // ---- light & ripples --------------------------------------------------------
 
-  addPulse(pos, time) {
+  // A ripple of light across the real room. `color` (THREE.Color, scaled by
+  // intensity) defaults to sonar cyan.
+  addPulse(pos, time, color = null, intensity = 1) {
     this.uniforms.uPulse.value[this.pulseIdx].set(pos.x, pos.y, pos.z, time);
+    const c = this.uniforms.uPulseCol.value[this.pulseIdx];
+    if (color) c.copy(color).multiplyScalar(intensity);
+    else c.setRGB(0.35 * intensity, 0.85 * intensity, 1.0 * intensity);
     this.pulseIdx = (this.pulseIdx + 1) % MAX_PULSES;
+  }
+
+  // Remove everything an app painted onto the room (ripples, lights, stars, sun).
+  clearEffects() {
+    for (const p of this.uniforms.uPulse.value) p.w = -999;
+    for (const l of this.uniforms.uLights.value) l.w = 0;
+    this.uniforms.uStarOrigin.value.w = 1e9;
+    this.uniforms.uStars.value = 0;
+    this.uniforms.uSun.value.w = 0;
+  }
+
+  // First real surface along a ray: { point, normal, label, distance } or null.
+  raycast(origin, dir, far = 6) {
+    this._rc ??= new THREE.Raycaster();
+    this._rc.set(origin, dir);
+    this._rc.far = far;
+    const targets = [];
+    for (const e of this.entries.values()) if (e.active && e.kind !== 'synthetic') targets.push(e.obj);
+    if (!targets.length) return null;
+    this.group.updateMatrixWorld(true);
+    const hit = this._rc.intersectObjects(targets, false)[0];
+    if (!hit) return null;
+    const normal = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : new THREE.Vector3(0, 1, 0);
+    if (normal.dot(dir) > 0) normal.negate(); // always face the viewer
+    const entry = [...this.entries.values()].find((e) => e.obj === hit.object);
+    return { point: hit.point.clone(), normal, label: entry?.label || '', distance: hit.distance };
   }
 
   revealStars(pos, time) {
