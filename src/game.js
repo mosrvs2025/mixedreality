@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { Firefly, KINDS } from './firefly.js';
 import { Moth } from './moth.js';
+import { PlayArea } from './area.js';
 import { PULSE_SPEED, MAX_LIGHTS } from './room.js';
 import { loadBest, saveBest } from './memory.js';
 
@@ -28,6 +29,7 @@ export class Game {
   constructor({ scene, room, audio, particles, sky, label, scoreLabel, memories, glowTex, sim }) {
     Object.assign(this, { scene, room, audio, particles, sky, label, scoreLabel, memories, glowTex, sim });
     this.flies = [];
+    this.area = new PlayArea();
     this.moths = [];
     this.memoryNights = [];
     this.lanterns = [];
@@ -131,10 +133,12 @@ export class Game {
 
   // ---- spawning ------------------------------------------------------------------
 
-  findPerch(head, { hidden = false, minD = 0.6, maxD = 4.5, inView = null } = {}) {
+  // A real surface where a firefly can perch. With reach on (the default) it
+  // must be touchable from inside the player's boundary.
+  findPerch(head, { hidden = false, minD = 0.35, maxD = 4.5, inView = null, near = null, reach = true } = {}) {
     let fallback = null;
     let rays = 3; // raycasts against a full room mesh aren't free
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < 60; i++) {
       const s = this.room.sample();
       if (!s) break;
       const h = s.pos.y;
@@ -144,6 +148,8 @@ export class Game {
       const dz = s.pos.z - head.z;
       const hd = Math.hypot(dx, dz);
       if (hd < minD || hd > maxD) continue;
+      if (reach && !this.area.reachable(_v.copy(s.pos).addScaledVector(s.normal, 0.05))) continue;
+      if (near && s.pos.distanceTo(near.pos) > near.max) continue;
       if (h < 0.1 && s.normal.y > 0.7 && Math.random() < 0.6) continue; // floors are big; prefer furniture
       if (this.flies.some((f) => f.inField && f.perch.distanceTo(s.pos) < 0.35)) continue;
       if (inView) {
@@ -155,11 +161,10 @@ export class Game {
       return s;
     }
     if (fallback) return fallback;
-    // No room data: fireflies drift in the air around you instead.
-    const a = Math.random() * Math.PI * 2;
-    const r = 1 + Math.random() * 1.8;
-    const pos = new THREE.Vector3(head.x + Math.cos(a) * r, 0.4 + Math.random() * 1.4, head.z + Math.sin(a) * r);
-    if (inView) pos.copy(head).addScaledVector(inView, 1.2).setY(Math.max(0.6, head.y - 0.5));
+    // Nowhere suitable on a surface: drift in the air, always within reach.
+    const pos = reach ? this.area.randomInside(head) : new THREE.Vector3().randomDirection().setY(0).multiplyScalar(1.5).add(head);
+    pos.y = 0.6 + Math.random() * 0.9;
+    if (inView) pos.copy(head).addScaledVector(inView, 0.7).setY(Math.max(0.6, head.y - 0.45));
     return { pos, normal: _w.subVectors(head, pos).normalize().clone(), label: '' };
   }
 
@@ -218,6 +223,7 @@ export class Game {
 
   update(dt, now, ctx) {
     const { head, fwd, hands } = ctx;
+    this.area.visit(head);
     const pt = now - this.t0;
     const fwdFlat = _w.set(fwd.x, 0, fwd.z);
     if (fwdFlat.lengthSq() < 1e-4) fwdFlat.set(0, 0, -1);
@@ -267,6 +273,7 @@ export class Game {
       for (const f of this.flies) {
         if (!f.catchable) continue;
         for (const h of hands) {
+          if (!h.radius) continue;
           const d = f.pos.distanceTo(h.pos);
           if (d < h.radius * (f.kind === 'golden' ? 1.25 : 1)) {
             this.catch(f, h, now);
@@ -274,12 +281,18 @@ export class Game {
             break;
           }
           const speed = h.vel.length();
-          if (f !== this.firstFly && d < 0.3 && speed > 1.9 && f.startleCD <= 0 && f.state === 'perched') {
-            f.startleCD = 1.5;
-            const s = this.findPerch(head, { minD: 0.5, maxD: 4 });
+          // A real swipe startles a firefly once; it hops somewhere close and reachable.
+          if (f !== this.firstFly && !f.startled && d < 0.22 && speed > 2.8 && f.state === 'perched' && f.kind !== 'golden') {
+            f.startled = true;
+            const s = this.findPerch(head, { minD: 0.2, near: { pos: f.pos, max: 1.3 } });
             this.audio.startle(f.pos.clone());
             f.flyTo(s.pos, s.normal, 'perched', 2.2);
             break;
+          }
+          // A slow, open hand nearby: the firefly drifts onto your finger.
+          if (d < 0.35 && speed < 1.6 && (f.state === 'perched' || f.state === 'hover')) {
+            const pull = Math.min(1, dt * (f.kind === 'golden' ? 1.2 : 2.2) * (1 - d / 0.35 + 0.3));
+            (f.state === 'hover' ? f.hoverTarget : f.perch).lerp(h.pos, pull);
           }
         }
       }
@@ -316,6 +329,11 @@ export class Game {
       if (f.pinged) {
         f.pinged = false;
         if (f.inField) this.audio.chirp(f.pos.clone(), f.kind === 'golden', 0.07);
+      }
+      // Stranded out of reach (e.g. the boundary arrived late)? Flit somewhere touchable.
+      if (f.inField && f.state === 'perched' && f !== this.firstFly && f.t > 1.5 && (f.reachCheck = (f.reachCheck || 0) + 1) % 15 === 0 && !this.area.reachable(f.perch)) {
+        const s = this.findPerch(head);
+        f.flyTo(s.pos, s.normal, 'perched', 1.6);
       }
       if (f.inField && (f.state === 'perched' || f.state === 'hover')) {
         f.nextChirp -= dt;
@@ -391,7 +409,7 @@ export class Game {
       this.label.hide();
     }
     if (this.introSonar && !this.firstFly && pt > this.sonarAt + 2.0) {
-      const s = this.findPerch(head, { inView: fwdF, minD: 0.7, maxD: 2.4 });
+      const s = this.findPerch(head, { inView: fwdF, minD: 0.5, maxD: 1.8 });
       this.firstFly = this.spawn(head, 'normal', { sample: s });
       this.at(pt + 1.6, () => this.say('A firefly noticed you', 'reach out… gently'));
     }
@@ -451,7 +469,7 @@ export class Game {
         continue;
       }
       if (f.state === 'perched' && f.t > 2.6 + Math.random() * 2) {
-        const s = this.findPerch(head, { minD: 0.8, maxD: 4 });
+        const s = this.findPerch(head, { minD: 0.5, near: { pos: f.pos, max: 2.5 } });
         f.flyTo(s.pos, s.normal, 'perched', 2.0);
       }
     }
@@ -465,7 +483,7 @@ export class Game {
     const alive = this.moths.filter((m) => m.state !== 'fleeing').length;
     if (left < 75 && left > 6 && this.mothTimer <= 0 && alive < (left < 30 ? 3 : 2)) {
       this.mothTimer = left < 30 ? 6 : 10;
-      const s = this.findPerch(head, { minD: 1.6, maxD: 4.5 });
+      const s = this.findPerch(head, { minD: 1.6, maxD: 4.5, reach: false });
       const m = new Moth(this.scene, this.glowTex, s.pos.clone().addScaledVector(s.normal, 0.12));
       this.moths.push(m);
       this.audio.moth(m.pos.clone());

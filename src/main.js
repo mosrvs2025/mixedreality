@@ -48,12 +48,19 @@ function makeGame(sim) {
   return memories;
 }
 
+const prevVel = new Map();
+
+// Velocity is smoothed: hand-tracking jitter must never read as a swipe.
 function trackPoint(key, pos, dt, extra) {
   const prev = prevPts.get(key);
-  const vel = new THREE.Vector3();
-  if (prev && dt > 0) vel.subVectors(pos, prev).divideScalar(dt);
+  const raw = new THREE.Vector3();
+  if (prev && dt > 0) raw.subVectors(pos, prev).divideScalar(dt);
+  if (raw.length() > 8) raw.setScalar(0); // tracking jump, not motion
+  const vel = prevVel.get(key) || new THREE.Vector3();
+  vel.lerp(raw, 0.3);
+  prevVel.set(key, vel);
   prevPts.set(key, pos.clone());
-  return { pos, vel, ...extra };
+  return { pos, vel: vel.clone(), ...extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +69,8 @@ function trackPoint(key, pos, dt, extra) {
 let hitSources = [];
 let frameNo = 0;
 
-const BASE_FEATURES = ['hand-tracking', 'hit-test', 'plane-detection', 'mesh-detection', 'anchors'];
+const BASE_FEATURES = ['hand-tracking', 'hit-test', 'plane-detection', 'mesh-detection', 'anchors', 'bounded-floor'];
+let boundedSpace = null;
 
 // Depth sensing lets real hands, people and pets hide fireflies. Some runtimes
 // reject a session whose depth preferences they can't meet, so fall back.
@@ -115,6 +123,7 @@ async function startXR() {
   session.addEventListener('end', () => {
     mode = 'landing';
     hitSources = [];
+    boundedSpace = null;
     document.body.classList.remove('playing');
     $('status').textContent = game?.score ? `Last night you kept ${game.score} fireflies.` : '';
     resetScene();
@@ -133,6 +142,25 @@ async function startXR() {
   }
 
   memories.restore(session, (night, getPts) => game.addMemoryNight(night, getPts));
+
+  // The guardian boundary: fireflies only go where you can reach from inside it.
+  try {
+    boundedSpace = await session.requestReferenceSpace('bounded-floor');
+    if (!boundedSpace.boundsGeometry || boundedSpace.boundsGeometry.length < 3) boundedSpace = null;
+  } catch {
+    boundedSpace = null;
+  }
+}
+
+function readBounds(frame, refSpace) {
+  if (!boundedSpace || !game) return;
+  const pose = frame.getPose(boundedSpace, refSpace);
+  if (!pose) return;
+  _m.fromArray(pose.transform.matrix);
+  game.area.setBounds(boundedSpace.boundsGeometry.map((p) => {
+    _p.set(p.x, 0, p.z).applyMatrix4(_m);
+    return new THREE.Vector2(_p.x, _p.z);
+  }));
 }
 
 const _m = new THREE.Matrix4();
@@ -151,6 +179,7 @@ function readXR(frame, dt) {
     up.set(0, 1, 0).applyQuaternion(headQ);
   }
   room.updateFromFrame(frame, refSpace);
+  if (frameNo % 30 === 0) readBounds(frame, refSpace);
 
   if (hitSources.length && frameNo % 3 === 0) {
     for (const src of hitSources) {
@@ -172,7 +201,7 @@ function readXR(frame, dt) {
       const palm = frame.getJointPose(src.hand.get('middle-finger-metacarpal'), refSpace);
       if (tip) {
         const p = tip.transform.position;
-        const h = trackPoint(`${src.handedness}-tip`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.085, kind: 'hand', lantern: true, source: src });
+        const h = trackPoint(`${src.handedness}-tip`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.11, kind: 'hand', lantern: true, source: src });
         hands.push(h);
         handBySource.set(src, h);
       }
@@ -182,7 +211,7 @@ function readXR(frame, dt) {
         // Joint -Y points out of the palm: palm facing the sky = cradling.
         const palmUp = -_n.set(0, 1, 0).applyQuaternion(_q.set(o.x, o.y, o.z, o.w)).y;
         hands.push(
-          trackPoint(`${src.handedness}-palm`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.09, kind: 'hand', lantern: false, source: src, cradle: palmUp > 0.65 }),
+          trackPoint(`${src.handedness}-palm`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.11, kind: 'hand', lantern: false, source: src, cradle: palmUp > 0.65 }),
         );
       }
     } else if (src.gripSpace) {
@@ -191,7 +220,7 @@ function readXR(frame, dt) {
       _m.fromArray(gp.transform.matrix);
       const pos = new THREE.Vector3(0, 0.01, -0.06).applyMatrix4(_m);
       const squeeze = !!src.gamepad?.buttons?.[1]?.pressed;
-      const h = trackPoint(`${src.handedness}-grip`, pos, dt, { radius: 0.11, kind: 'controller', lantern: true, source: src, cradle: squeeze });
+      const h = trackPoint(`${src.handedness}-grip`, pos, dt, { radius: 0.13, kind: 'controller', lantern: true, source: src, cradle: squeeze });
       hands.push(h);
       handBySource.set(src, h);
     }
@@ -386,6 +415,7 @@ function updateDebug(dt, frame) {
     line(`room: ${st.meshes} meshes · ${st.planes} planes · ${st.area.toFixed(0)} m² · ${st.hits} hits`, ok(st.area > 0.5 || st.hits > 12)),
     line(`labels: ${st.labels.slice(0, 6).join(', ') || '—'}`),
     line(`inputs: ${hands.map((h) => h.kind).join(', ') || 'none'}`, ok(hands.length)),
+    line(`play area: ${g?.area.mode ?? '-'}`, ok(g?.area.bounds)),
     line(`memories: ${g?.memoryNights.length ?? 0} nights · ${g?.memoryNights.filter((m) => m.located).length ?? 0} located · anchors ${has('anchors') ? 'yes' : 'no'}`),
     line(`fireflies: ${g?.flies.filter((f) => f.inField).length ?? 0} in room · ${g?.caught?.length ?? 0} kept`),
   ]);

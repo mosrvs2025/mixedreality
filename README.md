@@ -16,6 +16,7 @@ The game is built on your room's scanned geometry (WebXR `mesh-detection` / `pla
 - **Gloom moths.** In the last ~70 seconds, shadowy moths flutter out of your room and creep toward perched fireflies to snuff them out. A chime ripple scatters them as it rolls across the room, and so does a swat.
 - **Dawn comes through your real window.** If Space Setup labelled a window, sunrise glows in through it with drifting motes, and the fireflies you didn't catch fly out through it.
 - **Cradle your catch.** Hold out an open palm (or squeeze a controller's grip) and your caught fireflies pour out of their halo and swirl above your hand, lighting what's beneath it.
+- **Always within reach.** Fireflies only perch where your hand can reach from inside your Quest boundary (read via the `bounded-floor` reference space; without it, within reach of where you've actually stood). A slow, open hand draws a nearby firefly onto your finger.
 - **Gentleness is a mechanic.** Swipe fast and fireflies startle off to another surface. Reach slowly and they're yours.
 - **Spatial persistence.** At dawn your fireflies fly to your walls and ceiling and are pinned there with a persistent anchor (`anchor.requestPersistentHandle()`). Next time, the opening ripple reveals last night's fireflies glowing in the same spots.
 
