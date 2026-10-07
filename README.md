@@ -10,7 +10,7 @@ The game is built on your room's scanned geometry (WebXR `mesh-detection` / `pla
 
 - **Fireflies live on your real surfaces.** They spawn on area-weighted random points of your room mesh: on the table, under it, on the sofa arm, low on a wall. About a third are deliberately placed where your own furniture hides them from where you stand.
 - **Your furniture occludes them.** The room mesh is drawn into the depth buffer, so a firefly behind your sofa really is hidden. You have to walk, crouch and lean around your own room.
-- **Echolocation through your room.** Pinch, or pull the trigger, to send a chime. A sonar ripple rolls across your real walls and furniture as glowing contour lines. Each firefly it passes answers with a 3D-positioned chirp, and hidden ones glow through the objects in front of them for a moment.
+- **Echolocation through your room.** Make a fist (or pull the trigger) to send a chime. Pinching is deliberately not used with bare hands: pinching with the palm toward your face is Meta's system-menu gesture. A sonar ripple rolls across your real walls and furniture as glowing contour lines. Each firefly it passes answers with a 3D-positioned chirp, and hidden ones glow through the objects in front of them for a moment.
 - **Light lands on real things.** Fireflies and your glowing fingertips cast soft light pools onto your actual table and walls. Your real ceiling turns into a starry sky.
 - **Your hands and housemates hide them too.** On Quest 3 the game asks for `depth-sensing`, so real-world depth occludes fireflies: a hand, a person or a pet passing in front of one covers it.
 - **Gloom moths.** In the last ~70 seconds, shadowy moths flutter out of your room and creep toward perched fireflies to snuff them out. A chime ripple scatters them as it rolls across the room, and so does a swat.
@@ -34,7 +34,7 @@ After that you have 2:40 of play. Golden fireflies (worth 5) never sit still. Th
 It needs to be served over **HTTPS** and opened in **Meta Quest Browser** (Quest 3 / 3S recommended; Quest 2/Pro fall back to planes or hit-test).
 
 - Run **Space Setup** on the headset so your furniture is known, and allow *spatial data* when the browser asks.
-- Controls: reach with your hands or controllers to catch. Pinch or trigger to chime. After dawn, pinch or trigger again for another night.
+- Controls: reach with your hands or controllers to catch. An open palm toward a firefly draws it in, and a fist holds it. A fist (or trigger) with nothing nearby chimes. After dawn, make a fist (or pull the trigger) for another night.
 
 ### Hosting on GitHub Pages
 

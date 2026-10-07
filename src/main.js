@@ -4,6 +4,7 @@ import { Particles, Sky, Label, makeGlowTexture } from './fx.js';
 import { AudioEngine } from './audio.js';
 import { Memories } from './memory.js';
 import { Game } from './game.js';
+import { analyzeHand, FIST_CLOSE, FIST_OPEN } from './hands.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -49,6 +50,7 @@ function makeGame(sim) {
 }
 
 const prevVel = new Map();
+const fistState = new Map();
 
 // Velocity is smoothed: hand-tracking jitter must never read as a swipe.
 function trackPoint(key, pos, dt, extra) {
@@ -118,6 +120,9 @@ async function startXR() {
 
   session.addEventListener('selectstart', (e) => {
     const h = handBySource.get(e.inputSource);
+    // A bare-hand pinch with the palm turned toward your face is Meta's system
+    // menu gesture, so never treat it as a chime. (Fist = our hand chime.)
+    if (e.inputSource.hand && (!h || h.facingHead)) return;
     game?.onSelect(h ? h.pos.clone() : head.clone().add(new THREE.Vector3(0, -0.3, 0)), performance.now() / 1000);
   });
   session.addEventListener('end', () => {
@@ -197,21 +202,45 @@ function readXR(frame, dt) {
   handBySource.clear();
   for (const src of frame.session.inputSources) {
     if (src.hand) {
-      const tip = frame.getJointPose(src.hand.get('index-finger-tip'), refSpace);
-      const palm = frame.getJointPose(src.hand.get('middle-finger-metacarpal'), refSpace);
-      if (tip) {
-        const p = tip.transform.position;
-        const h = trackPoint(`${src.handedness}-tip`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.11, kind: 'hand', lantern: true, source: src });
+      const joint = (name) => {
+        const j = src.hand.get(name);
+        const jp = j && frame.getJointPose(j, refSpace);
+        return jp ? new THREE.Vector3(jp.transform.position.x, jp.transform.position.y, jp.transform.position.z) : null;
+      };
+      const info = analyzeHand(joint, src.handedness);
+      const tipPos = joint('index-finger-tip');
+      const side = src.handedness;
+      // Which way is the palm facing relative to the player's face?
+      let facingHead = false;
+      let fistStart = false;
+      if (info) {
+        _p.subVectors(head, info.center).normalize();
+        facingHead = info.normal.dot(_p) > 0.35;
+        const was = fistState.get(side) || false;
+        const now = was ? info.fistDist < FIST_OPEN : info.fistDist < FIST_CLOSE;
+        fistStart = now && !was;
+        fistState.set(side, now);
+      }
+      // Fingertip: small, forgiving of nothing — you have to touch the firefly.
+      if (tipPos) {
+        const h = trackPoint(`${side}-tip`, tipPos, dt, { radius: 0.06, kind: 'hand', lantern: true, source: src, facingHead });
         hands.push(h);
         handBySource.set(src, h);
       }
-      if (palm) {
-        const p = palm.transform.position;
-        const o = palm.transform.orientation;
-        // Joint -Y points out of the palm: palm facing the sky = cradling.
-        const palmUp = -_n.set(0, 1, 0).applyQuaternion(_q.set(o.x, o.y, o.z, o.w)).y;
+      // Palm: the TRUE palm centre. It only catches fireflies on the palm side.
+      if (info) {
         hands.push(
-          trackPoint(`${src.handedness}-palm`, new THREE.Vector3(p.x, p.y, p.z), dt, { radius: 0.11, kind: 'hand', lantern: false, source: src, cradle: palmUp > 0.65 }),
+          trackPoint(`${side}-palm`, info.center, dt, {
+            radius: 0.1,
+            kind: 'hand',
+            lantern: false,
+            source: src,
+            normal: info.normal,
+            facingHead,
+            fist: fistState.get(side),
+            fistStart,
+            cradle: info.normal.y > 0.65 && info.fistDist > FIST_OPEN,
+          }),
         );
       }
     } else if (src.gripSpace) {
@@ -478,4 +507,5 @@ async function init() {
 }
 init();
 
-window.__fireflyNight = { get game() { return game; }, room, camera };
+window.__THREE = THREE;
+window.__fireflyNight = { get game() { return game; }, get hands() { return hands; }, room, camera };

@@ -7,6 +7,29 @@ export const KINDS = {
 };
 
 const CORE = new THREE.Color('#fffbe6');
+
+// Sensed depth is noisy around cluttered surfaces (bedding, cushions): a hard
+// depth test hides a firefly that's only centimetres behind a ragged edge.
+// Test it as if it were this much closer to the viewer, so it fades behind
+// edges instead of snapping out. (View space, metres.)
+export const DEPTH_FORGIVENESS = 0.18;
+
+function forgiveDepth(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <fog_vertex>',
+      `#include <fog_vertex>
+       {
+         // Same x/y (so it looks identical), but depth as if nearer the eye.
+         vec4 nearer = projectionMatrix * vec4(mvPosition.xy, min(mvPosition.z + ${DEPTH_FORGIVENESS.toFixed(3)}, -0.08), 1.0);
+         gl_Position.z = nearer.z / nearer.w * gl_Position.w;
+       }`,
+    );
+  };
+  return material;
+}
+// Perch this far off the surface: clear of lumpy bedding and depth noise.
+const CLEARANCE = 0.1;
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 
@@ -21,9 +44,9 @@ export class Firefly {
     this.group = new THREE.Group();
     const mk = (color, opts = {}) =>
       new THREE.SpriteMaterial({ map: tex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, ...opts });
-    this.glow = new THREE.Sprite(mk(this.color));
+    this.glow = new THREE.Sprite(forgiveDepth(mk(this.color)));
     this.glow.scale.setScalar(k.size);
-    this.core = new THREE.Sprite(mk(CORE));
+    this.core = new THREE.Sprite(forgiveDepth(mk(CORE)));
     this.core.scale.setScalar(k.size * 0.3);
     // Only drawn where real geometry is in front: the chime "sees" through walls.
     this.xray = new THREE.Sprite(mk(this.color, { depthFunc: THREE.GreaterDepth, opacity: 0 }));
@@ -49,6 +72,7 @@ export class Firefly {
     this.xrayAmt = 0;
     this.pingAt = Infinity;
     this.boost = 0;
+    this.nearGlow = 0;
     this.brightness = 0;
     this.dim = 1;
     this.nextChirp = 1 + Math.random() * 4;
@@ -70,7 +94,7 @@ export class Firefly {
   }
 
   emergeAt(s) {
-    this.perch.copy(s.pos).addScaledVector(s.normal, 0.05);
+    this.perch.copy(s.pos).addScaledVector(s.normal, CLEARANCE);
     this.normal.copy(s.normal);
     this.pos.copy(s.pos);
     this.state = 'emerging';
@@ -86,7 +110,7 @@ export class Firefly {
 
   flyTo(pos, normal, after = 'perched', speed = 1.6) {
     this.from.copy(this.pos);
-    this.to.copy(pos).addScaledVector(normal, 0.05);
+    this.to.copy(pos).addScaledVector(normal, CLEARANCE);
     this.normal.copy(normal);
     const dist = this.from.distanceTo(this.to);
     this.ctrl
@@ -115,7 +139,7 @@ export class Firefly {
     switch (this.state) {
       case 'emerging': {
         const k = Math.min(1, this.t / 1.2);
-        this.pos.lerpVectors(_b.copy(this.perch).addScaledVector(this.normal, -0.05), this.perch, k);
+        this.pos.lerpVectors(_b.copy(this.perch).addScaledVector(this.normal, -CLEARANCE), this.perch, k);
         this.scale = k * k * (3 - 2 * k);
         flash = Math.max(flash, 1 - k);
         if (k >= 1) {
@@ -181,7 +205,9 @@ export class Firefly {
     this.brightness = Math.min(1.4, (this.k.base + flash * 0.9 + this.boost) * this.dim);
     this.glow.material.opacity = this.brightness;
     this.core.material.opacity = Math.min(1, this.brightness * 1.2);
-    this.xray.material.opacity = this.xrayAmt * 0.9;
+    // Fireflies near the player never vanish entirely behind a real object:
+    // a faint outline shows through, so you can tell where to reach.
+    this.xray.material.opacity = Math.max(this.xrayAmt * 0.9, this.nearGlow * 0.1 * Math.min(1, this.scale));
     const s = Math.max(0.001, this.scale) * (0.9 + 0.2 * flash);
     this.group.scale.setScalar(s);
   }

@@ -15,6 +15,10 @@ const GOLDEN_AT = [30, 80, 125];
 const LANTERN = new THREE.Color('#ffd27a');
 const SEED = new THREE.Color('#7fe8ff');
 const DAWN_MOTE = new THREE.Color('#ffd0a0');
+const _up = new THREE.Vector3(0, 1, 0);
+const _fwd = new THREE.Vector3(0, 0, -1);
+const _t1 = new THREE.Vector3();
+const _t2 = new THREE.Vector3();
 const MOTH = new THREE.Color('#8a4dff');
 
 const _v = new THREE.Vector3();
@@ -78,7 +82,8 @@ export class Game {
   }
 
   get chimeHint() {
-    return this.sim ? 'press Space to chime' : 'pinch or pull the trigger to chime';
+    if (this.sim) return 'press Space to chime';
+    return this.inputKind === 'controller' ? 'pull the trigger to chime' : 'make a fist to chime';
   }
 
   // Schedule fn at phase-relative time.
@@ -268,6 +273,17 @@ export class Game {
     } else sun.w = 0;
     this.audio.night = this.night / NIGHT * (1 - this.dawn);
 
+    // A closing fist: grab a firefly in your palm, or (nothing there) chime.
+    this.inputKind = hands.some((h) => h.kind === 'hand') ? 'hand' : hands.some((h) => h.kind === 'controller') ? 'controller' : this.inputKind;
+    for (const h of hands) {
+      if (!h.fistStart) continue;
+      const near = this.flies.find((f) => f.catchable && f.pos.distanceTo(h.pos) < 0.2);
+      if (near && (this.phase === 'intro' || this.phase === 'play')) {
+        this.catch(near, h, now);
+        if (near === this.firstFly) this.beginPlay(now, head, fwdF);
+      } else this.onSelect(h.pos.clone(), now);
+    }
+
     // catching & startling
     if (this.phase === 'intro' || this.phase === 'play') {
       for (const f of this.flies) {
@@ -275,10 +291,18 @@ export class Game {
         for (const h of hands) {
           if (!h.radius) continue;
           const d = f.pos.distanceTo(h.pos);
-          if (d < h.radius * (f.kind === 'golden' ? 1.25 : 1)) {
+          // A palm only catches fireflies on its palm side, never from behind the hand.
+          const onPalmSide = !h.normal || _v.subVectors(f.pos, h.pos).normalize().dot(h.normal) > -0.02;
+          if (d < h.radius * (f.kind === 'golden' ? 1.25 : 1) && onPalmSide && !h.fist) {
             this.catch(f, h, now);
             if (f === this.firstFly) this.beginPlay(now, head, fwdF);
             break;
+          }
+          // An open palm facing a firefly within 25 cm draws it in, like a magnet.
+          if (h.normal && !h.fist && d < 0.25 && onPalmSide && h.vel.length() < 1.6 && (f.state === 'perched' || f.state === 'hover')) {
+            const goal = _w.copy(h.pos).addScaledVector(h.normal, 0.04);
+            (f.state === 'hover' ? f.hoverTarget : f.perch).lerp(goal, Math.min(1, dt * (f.kind === 'golden' ? 1.5 : 3.5)));
+            continue;
           }
           const speed = h.vel.length();
           // A real swipe startles a firefly once; it hops somewhere close and reachable.
@@ -289,9 +313,9 @@ export class Game {
             f.flyTo(s.pos, s.normal, 'perched', 2.2);
             break;
           }
-          // A slow, open hand nearby: the firefly drifts onto your finger.
-          if (d < 0.35 && speed < 1.6 && (f.state === 'perched' || f.state === 'hover')) {
-            const pull = Math.min(1, dt * (f.kind === 'golden' ? 1.2 : 2.2) * (1 - d / 0.35 + 0.3));
+          // A slow fingertip nearby: the firefly drifts onto your finger.
+          if (!h.normal && d < 0.2 && speed < 1.6 && (f.state === 'perched' || f.state === 'hover')) {
+            const pull = Math.min(1, dt * (f.kind === 'golden' ? 1.2 : 2.2) * (1 - d / 0.2 + 0.3));
             (f.state === 'hover' ? f.hoverTarget : f.perch).lerp(h.pos, pull);
           }
         }
@@ -307,11 +331,17 @@ export class Game {
       if (f.state === 'caught') {
         let target;
         if (cradle) {
-          // Swirl in a tight little column above the open palm.
+          // Nestle in the palm: within ~4 cm of its centre, on its palm side.
           const a = ci * 2.39996 + now * 1.6;
           const k = (ci % 12) / 12;
-          const r = 0.03 + 0.05 * k;
-          target = _v.set(cradle.x + Math.cos(a) * r, cradle.y + 0.05 + 0.12 * k + 0.015 * Math.sin(now * 3 + ci), cradle.z + Math.sin(a) * r);
+          const r = 0.012 + 0.028 * k;
+          const n = this.cradleNormal;
+          _t1.crossVectors(n, Math.abs(n.y) > 0.9 ? _fwd : _up).normalize();
+          _t2.crossVectors(n, _t1);
+          target = _v.copy(cradle)
+            .addScaledVector(n, 0.035 + 0.03 * k + 0.008 * Math.sin(now * 3 + ci))
+            .addScaledVector(_t1, Math.cos(a) * r)
+            .addScaledVector(_t2, Math.sin(a) * r);
         } else {
           const a = ci * 2.39996 + now * 0.35;
           const r = 0.55 + 0.06 * Math.sin(now * 0.7 + ci);
@@ -325,6 +355,7 @@ export class Game {
         f.scale += ((cradle ? 0.45 : 0.7) - f.scale) * Math.min(1, dt * 2);
         ci++;
       }
+      f.nearGlow = f.inField && f.state === 'perched' && f.pos.distanceToSquared(head) < 2.4 * 2.4 ? 1 : 0;
       f.update(dt, now);
       if (f.pinged) {
         f.pinged = false;
@@ -385,6 +416,8 @@ export class Game {
     }
     this.cradlePos ??= new THREE.Vector3();
     this.cradlePos.copy(h.pos);
+    this.cradleNormal ??= new THREE.Vector3(0, 1, 0);
+    this.cradleNormal.copy(h.normal || _up);
     return this.cradlePos;
   }
 
@@ -557,7 +590,7 @@ export class Game {
         color: '#ffeec2',
       },
     ];
-    if (again) lines.push({ text: this.sim ? 'press Space for another night' : 'pinch or pull the trigger for another night', size: 38, weight: 500, color: '#bfe9ff', glow: 'rgba(120,200,255,0.8)' });
+    if (again) lines.push({ text: this.sim ? 'press Space for another night' : this.inputKind === 'controller' ? 'pull the trigger for another night' : 'make a fist for another night', size: 38, weight: 500, color: '#bfe9ff', glow: 'rgba(120,200,255,0.8)' });
     this.label.show(lines);
   }
 
@@ -709,8 +742,9 @@ export class Game {
 
   updateHud(dt, now, pt, head, fwdF) {
     // Main text floats ahead of you, lazily following your gaze.
-    const target = _v.copy(head).addScaledVector(fwdF, 1.5);
-    target.y = head.y + 0.02;
+    // Text floats a little below eye level so it never blocks the room you're looking at.
+    const target = _v.copy(head).addScaledVector(fwdF, 1.6);
+    target.y = head.y - 0.2;
     if (!this.label.mesh.visible) this.labelPos.copy(target);
     this.labelPos.lerp(target, Math.min(1, dt * 1.5));
     this.label.mesh.position.copy(this.labelPos);
